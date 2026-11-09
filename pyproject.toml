@@ -1,0 +1,26 @@
+[project]
+name = "integration-4"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+ "fastapi==0.115.12",
+ "uvicorn==0.34.2",
+ "httpx==0.28.1",
+ "pandas==2.2.3",
+ "numpy==1.26.4",
+ "scikit-learn==1.6.1",
+ "xgboost==3.0.2",
+ "optuna==4.3.0",
+ "mlflow==3.1.0",
+ "psycopg[binary]==3.2.9",
+ "sqlalchemy==2.0.41",
+ "pydantic==2.11.5",
+ "pyjwt==2.10.1",
+ "tenacity==9.1.2",
+ "python-dotenv==1.1.0",
+ "pyarrow==20.0.0",
+ "redis==6.2.0",
+ "rq==2.3.3",
+ "matplotlib==3.10.3",
+ "evidently==0.7.15",
+]

@@ -1,0 +1,126 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orders}
+      POSTGRES_DB: ${POSTGRES_DB:-orders}
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      retries: 15
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+  mlflow:
+    build:
+      context: .
+      dockerfile: mlflow-service/Dockerfile
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+        - 'exec mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri "postgresql+psycopg2://$${POSTGRES_USER}:$$(cat /run/secrets/db_password)@postgres/mlflow" --serve-artifacts --artifacts-destination /mlartifacts'
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orders}
+    secrets: [db_password]
+    volumes: [mlartifacts:/mlartifacts]
+    ports: ["${MLFLOW_PORT:-5000}:5000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+  trainer:
+    build:
+      context: .
+      dockerfile: training_service/Dockerfile
+    profiles: ["train"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_EXPERIMENT_NAME: house-price
+    depends_on:
+      mlflow: {condition: service_started}
+  forecast-api:
+    build:
+      context: .
+      dockerfile: forecast-service/Dockerfile
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MODEL_NAME: ${MODEL_NAME:-house-price}
+      MODEL_ALIAS: ${MODEL_ALIAS:-prod}
+    depends_on: [mlflow]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:8001/health')"]
+      interval: 8s
+      retries: 15
+  orders-api:
+    build:
+      context: .
+      dockerfile: orders-service/Dockerfile
+    environment: &orders-env
+      POSTGRES_USER: ${POSTGRES_USER:-orders}
+      POSTGRES_DB: ${POSTGRES_DB:-orders}
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+      FORECAST_URL: http://forecast-api:8001
+      FORECAST_TIMEOUT: ${FORECAST_TIMEOUT:-5.0}
+      BATCH_MAX_ITEMS: ${BATCH_MAX_ITEMS:-50}
+      REDIS_URL: redis://redis:6379/0
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MODEL_NAME: ${MODEL_NAME:-house-price}
+      MODEL_ALIAS: ${MODEL_ALIAS:-prod}
+      DRIFT_THRESHOLD: ${DRIFT_THRESHOLD:-0.3}
+      MONITOR_WINDOW_HOURS: ${MONITOR_WINDOW_HOURS:-24}
+      MONITOR_INTERVAL_SECONDS: ${MONITOR_INTERVAL_SECONDS:-3600}
+    secrets: [db_password, jwt_secret]
+    ports: ["${ORDERS_PORT:-8000}:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+  orders-worker:
+    build:
+      context: .
+      dockerfile: orders-service/Dockerfile
+    command: ["uv", "run", "rq", "worker", "pricing", "--url", "redis://redis:6379/0"]
+    environment: *orders-env
+    secrets: [db_password, jwt_secret]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+      forecast-api: {condition: service_healthy}
+
+  monitoring-worker:
+    build:
+      context: .
+      dockerfile: orders-service/Dockerfile
+    command: ["uv", "run", "rq", "worker", "monitoring", "--with-scheduler", "--url", "redis://redis:6379/0"]
+    environment: *orders-env
+    secrets: [db_password, jwt_secret]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+      mlflow: {condition: service_started}
+
+  monitoring-scheduler:
+    build:
+      context: .
+      dockerfile: orders-service/Dockerfile
+    command: ["uv", "run", "python", "-m", "app.monitoring_scheduler"]
+    environment: *orders-env
+    secrets: [db_password, jwt_secret]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+      mlflow: {condition: service_started}
+
+secrets:
+  db_password:
+    file: ./secrets/postgres_password.txt
+  jwt_secret:
+    file: ./secrets/jwt_secret.txt
+volumes:
+  pgdata:
+  redisdata:
+  mlartifacts:
